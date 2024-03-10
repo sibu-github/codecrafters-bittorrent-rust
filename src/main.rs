@@ -1,10 +1,10 @@
 use serde_json;
+use sha1::{Digest, Sha1};
 use std::{env, fs, io::Read};
-use sha1::{Sha1, Digest};
 
-use serde::{Serialize, Deserialize};
-use serde_bytes::ByteBuf;
+use serde::{Deserialize, Serialize};
 use serde_bencode::value::Value as BencodeValue;
+use serde_bytes::ByteBuf;
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, Serialize)]
@@ -106,7 +106,7 @@ fn main() {
         let encoded_value = &args[2];
         let decoded_value = decode_bencoded_value(encoded_value);
         println!("{}", decoded_value.to_string());
-    } else if command == "info" {
+    } else if command == "info" || command == "peers" {
         let file_name = &args[2];
         let mut file = fs::File::open(file_name).unwrap();
         let length = file.metadata().unwrap().len();
@@ -114,23 +114,60 @@ fn main() {
         file.read_to_end(&mut data).unwrap();
         let data: Torrent = serde_bencode::from_bytes(&data).unwrap();
         let info = serde_bencode::to_bytes(&data.info).unwrap();
-        println!("Tracker URL: {}", data.announce.unwrap());
-        println!("Length: {}", data.info.length.unwrap());
-        println!("Info Hash: {}", get_hash(&info));
-        let piece_length = data.info.piece_length as usize;
-        println!("Piece Length: {}", piece_length);
-        println!("Piece Hashes:");
+        let tracker_url = data.announce.unwrap();
+        let piece_length = data.info.piece_length;
         let pieces = data.info.pieces.as_slice();
-        pieces.chunks(20).for_each(|d| println!("{}", hex::encode(d)));
+        if command == "info" {
+            println!("Tracker URL: {}", &tracker_url);
+            println!("Length: {}", data.info.length.unwrap());
+            println!("Info Hash: {}", get_hash(&info));
+            println!("Piece Length: {}", piece_length);
+            println!("Piece Hashes:");
+            pieces
+                .chunks(20)
+                .for_each(|d| println!("{}", hex::encode(d)));
+        }
+        if command == "peers" {
+            make_request(&tracker_url, &info, piece_length);
+        }
     } else {
         println!("unknown command: {}", args[1])
     }
 }
-
 
 fn get_hash(data: &[u8]) -> String {
     let mut hasher = Sha1::new();
     hasher.update(&data);
     let hash = hasher.finalize();
     hex::encode(hash)
+}
+
+fn make_request(url: &str, info: &[u8], piece_length: i64) {
+    let mut hasher = Sha1::new();
+    hasher.update(&info);
+    let info_hash = hasher.finalize();
+    let mut info_hash_encoded = String::with_capacity(60);
+    for byte in info_hash {
+        info_hash_encoded.push('%');
+        info_hash_encoded.push_str(&hex::encode(&[byte]));
+    }
+    let url = format!(
+        "{}?info_hash={}&peer_id=00112233445566778899&port=6881&uploaded=0&downloaded=0&left={}&compact=1",
+        url, &info_hash_encoded, piece_length
+    );
+
+    #[allow(dead_code)]
+    #[derive(Deserialize)]
+    struct Response {
+        interval: i64,
+        peers: ByteBuf,
+    }
+
+    let resp = reqwest::blocking::get(url).unwrap().bytes().unwrap();
+    let resp: Response = serde_bencode::from_bytes(&resp).unwrap();
+    resp.peers.as_slice().chunks(6).for_each(|d| {
+        let port = u16::from_be_bytes([d[4], d[5]]);
+        let addr = format!("{}.{}.{}.{}:{}", d[0], d[1], d[2], d[3], port);
+        println!("{}", addr);
+    });
 }
