@@ -1,16 +1,17 @@
 use serde_json;
 use std::{env, fs, io::Read};
+use sha1::{Sha1, Digest};
 
-use serde::Deserialize;
+use serde::{Serialize, Deserialize};
 use serde_bytes::ByteBuf;
 use serde_bencode::value::Value as BencodeValue;
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Node(String, i64);
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct File {
     path: Vec<String>,
     length: i64,
@@ -19,7 +20,7 @@ struct File {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Info {
     pub name: String,
     pub pieces: ByteBuf,
@@ -112,8 +113,14 @@ fn main() {
         let mut data = Vec::with_capacity(length as usize);
         file.read_to_end(&mut data).unwrap();
         let data: Torrent = serde_bencode::from_bytes(&data).unwrap();
+        let info = serde_bencode::to_bytes(&data.info).unwrap();
+        let mut hasher = Sha1::new();
+        hasher.update(&info);
+        let hash = hasher.finalize();
+        let hash = hex::encode(hash);
         println!("Tracker URL: {}", data.announce.unwrap());
         println!("Length: {}", data.info.length.unwrap());
+        println!("Info Hash: {}", hash);
     } else {
         println!("unknown command: {}", args[1])
     }
