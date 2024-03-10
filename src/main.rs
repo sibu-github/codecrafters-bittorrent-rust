@@ -114,14 +114,23 @@ fn main() {
         file.read_to_end(&mut data).unwrap();
         let data: Torrent = serde_bencode::from_bytes(&data).unwrap();
         let info = serde_bencode::to_bytes(&data.info).unwrap();
-        let mut hasher = Sha1::new();
-        hasher.update(&info);
-        let hash = hasher.finalize();
-        let hash = hex::encode(hash);
         println!("Tracker URL: {}", data.announce.unwrap());
         println!("Length: {}", data.info.length.unwrap());
-        println!("Info Hash: {}", hash);
+        println!("Info Hash: {}", get_hash(&info));
+        let piece_length = data.info.piece_length as usize;
+        println!("Piece Length: {}", piece_length);
+        println!("Piece Hashes:");
+        let pieces = data.info.pieces.as_slice();
+        pieces.chunks(20).for_each(|d| println!("{}", hex::encode(d)));
     } else {
         println!("unknown command: {}", args[1])
     }
+}
+
+
+fn get_hash(data: &[u8]) -> String {
+    let mut hasher = Sha1::new();
+    hasher.update(&data);
+    let hash = hasher.finalize();
+    hex::encode(hash)
 }
