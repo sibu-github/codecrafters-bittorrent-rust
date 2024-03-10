@@ -1,6 +1,6 @@
 use serde_json;
 use sha1::{Digest, Sha1};
-use std::{env, fs, io::Read};
+use std::{env, fs, io::{Read, Write}, net::TcpStream};
 
 use serde::{Deserialize, Serialize};
 use serde_bencode::value::Value as BencodeValue;
@@ -130,6 +130,10 @@ fn main() {
         if command == "peers" {
             make_request(&tracker_url, &info, piece_length);
         }
+    } else if command == "handshake" {
+        let file_name = &args[2];
+        let addr = &args[3];
+        handshake(file_name, addr);
     } else {
         println!("unknown command: {}", args[1])
     }
@@ -170,4 +174,40 @@ fn make_request(url: &str, info: &[u8], piece_length: i64) {
         let addr = format!("{}.{}.{}.{}:{}", d[0], d[1], d[2], d[3], port);
         println!("{}", addr);
     });
+}
+
+fn handshake(file_name: &str, addr: &str) {
+    let mut file = fs::File::open(file_name).unwrap();
+    let length = file.metadata().unwrap().len();
+    let mut data = Vec::with_capacity(length as usize);
+    file.read_to_end(&mut data).unwrap();
+    let data: Torrent = serde_bencode::from_bytes(&data).unwrap();
+    let info = serde_bencode::to_bytes(&data.info).unwrap();
+    let mut hasher = Sha1::new();
+    hasher.update(&info);
+    let info_hash = hasher.finalize();
+    let mut body: [u8; 68] = [0; 68];
+    body[0] = 19;
+    "BitTorrent protocol"
+        .as_bytes()
+        .iter()
+        .enumerate()
+        .for_each(|(i, &b)| {
+            body[i + 1] = b;
+        });
+    info_hash.iter().enumerate().for_each(|(i, &b)| {
+            body[i + 28] = b;
+    });
+    "00112233445566778899"
+        .as_bytes()
+        .iter()
+        .enumerate()
+        .for_each(|(i, &b)| {
+            body[i + 48] = b;
+        });
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream.write_all(&body).unwrap();
+    let mut response = [0u8; 68];
+    stream.read_exact(&mut response).unwrap();
+    println!("{}", get_hash(&response[48..]));
 }
