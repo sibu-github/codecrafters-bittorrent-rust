@@ -1,8 +1,69 @@
 use serde_json;
-use std::env;
+use std::{env, fs, io::Read};
 
-// Available if you need it!
+use serde::Deserialize;
+use serde_bytes::ByteBuf;
 use serde_bencode::value::Value as BencodeValue;
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct Node(String, i64);
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct File {
+    path: Vec<String>,
+    length: i64,
+    #[serde(default)]
+    md5sum: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct Info {
+    pub name: String,
+    pub pieces: ByteBuf,
+    #[serde(rename = "piece length")]
+    pub piece_length: i64,
+    #[serde(default)]
+    pub md5sum: Option<String>,
+    #[serde(default)]
+    pub length: Option<i64>,
+    #[serde(default)]
+    pub files: Option<Vec<File>>,
+    #[serde(default)]
+    pub private: Option<u8>,
+    #[serde(default)]
+    pub path: Option<Vec<String>>,
+    #[serde(default)]
+    #[serde(rename = "root hash")]
+    pub root_hash: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct Torrent {
+    info: Info,
+    #[serde(default)]
+    announce: Option<String>,
+    #[serde(default)]
+    nodes: Option<Vec<Node>>,
+    #[serde(default)]
+    encoding: Option<String>,
+    #[serde(default)]
+    httpseeds: Option<Vec<String>>,
+    #[serde(default)]
+    #[serde(rename = "announce-list")]
+    announce_list: Option<Vec<Vec<String>>>,
+    #[serde(default)]
+    #[serde(rename = "creation date")]
+    creation_date: Option<i64>,
+    #[serde(rename = "comment")]
+    comment: Option<String>,
+    #[serde(default)]
+    #[serde(rename = "created by")]
+    created_by: Option<String>,
+}
 
 fn convert_to_json_value(val: &BencodeValue) -> serde_json::Value {
     match val {
@@ -44,6 +105,15 @@ fn main() {
         let encoded_value = &args[2];
         let decoded_value = decode_bencoded_value(encoded_value);
         println!("{}", decoded_value.to_string());
+    } else if command == "info" {
+        let file_name = &args[2];
+        let mut file = fs::File::open(file_name).unwrap();
+        let length = file.metadata().unwrap().len();
+        let mut data = Vec::with_capacity(length as usize);
+        file.read_to_end(&mut data).unwrap();
+        let data: Torrent = serde_bencode::from_bytes(&data).unwrap();
+        println!("Tracker URL: {}", data.announce.unwrap());
+        println!("Length: {}", length);
     } else {
         println!("unknown command: {}", args[1])
     }
