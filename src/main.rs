@@ -209,5 +209,5 @@ fn handshake(file_name: &str, addr: &str) {
     stream.write_all(&body).unwrap();
     let mut response = [0u8; 68];
     stream.read_exact(&mut response).unwrap();
-    println!("{}", get_hash(&response[48..]));
+    println!("{}", hex::encode(&response[48..]));
 }
