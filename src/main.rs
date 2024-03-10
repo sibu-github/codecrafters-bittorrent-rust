@@ -36,7 +36,6 @@ fn decode_bencoded_value(encoded_value: &str) -> serde_json::Value {
     convert_to_json_value(&value)
 }
 
-// Usage: your_bittorrent.sh decode "<encoded_value>"
 fn main() {
     let args: Vec<String> = env::args().collect();
     let command = &args[1];
