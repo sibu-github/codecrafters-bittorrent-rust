@@ -2,26 +2,38 @@ use serde_json;
 use std::env;
 
 // Available if you need it!
-// use serde_bencode
+use serde_bencode::value::Value as BencodeValue;
+
+fn convert_to_json_value(val: &BencodeValue) -> serde_json::Value {
+    match val {
+        BencodeValue::Bytes(b) => {
+            let s = String::from_utf8_lossy(&b).to_string();
+            serde_json::json!(s)
+        }
+        BencodeValue::Int(i) => serde_json::json!(i),
+        BencodeValue::List(l) => {
+            let mut arr: Vec<serde_json::Value> = vec![];
+            for i in l {
+                arr.push(convert_to_json_value(i));
+            }
+            serde_json::Value::Array(arr)
+        }
+        BencodeValue::Dict(dict) => {
+            let mut map = serde_json::Map::new();
+            for (k, v) in dict {
+                let key = String::from_utf8_lossy(k).to_string();
+                let val = convert_to_json_value(v);
+                map.insert(key, val);
+            }
+            serde_json::Value::Object(map)
+        }
+    }
+}
 
 #[allow(dead_code)]
 fn decode_bencoded_value(encoded_value: &str) -> serde_json::Value {
-    // If encoded_value starts with a digit, it's a number
-    if encoded_value.chars().next().unwrap().is_digit(10) {
-        // Example: "5:hello" -> "hello"
-        let colon_index = encoded_value.find(':').unwrap();
-        let number_string = &encoded_value[..colon_index];
-        let number = number_string.parse::<i64>().unwrap();
-        let string = &encoded_value[colon_index + 1..colon_index + 1 + number as usize];
-        return serde_json::json!(string);
-    }
-
-    // if encoded_value starts with 'i' then it's a integer
-    if encoded_value.chars().next().unwrap() == 'i' {
-        let v = serde_bencode::from_str::<i64>(encoded_value).unwrap();
-        return serde_json::json!(v);
-    }
-    panic!("Unhandled encoded value: {}", encoded_value)
+    let value: BencodeValue = serde_bencode::from_str(encoded_value).unwrap();
+    convert_to_json_value(&value)
 }
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
