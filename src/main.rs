@@ -113,7 +113,7 @@ fn main() {
         file.read_to_end(&mut data).unwrap();
         let data: Torrent = serde_bencode::from_bytes(&data).unwrap();
         println!("Tracker URL: {}", data.announce.unwrap());
-        println!("Length: {}", length);
+        println!("Length: {}", data.info.length.unwrap());
     } else {
         println!("unknown command: {}", args[1])
     }
