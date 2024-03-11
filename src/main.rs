@@ -1,6 +1,10 @@
 use serde_json;
 use sha1::{Digest, Sha1};
-use std::{env, fs, io::{Read, Write}, net::TcpStream};
+use std::{
+    env, fs,
+    io::{Read, Write},
+    net::TcpStream,
+};
 
 use serde::{Deserialize, Serialize};
 use serde_bencode::value::Value as BencodeValue;
@@ -134,6 +138,8 @@ fn main() {
         let file_name = &args[2];
         let addr = &args[3];
         handshake(file_name, addr);
+    } else if command == "download_piece" {
+        download_piece(args.as_slice());
     } else {
         println!("unknown command: {}", args[1])
     }
@@ -146,7 +152,7 @@ fn get_hash(data: &[u8]) -> String {
     hex::encode(hash)
 }
 
-fn make_request(url: &str, info: &[u8], piece_length: i64) {
+fn make_request(url: &str, info: &[u8], piece_length: i64) -> Vec<String> {
     let mut hasher = Sha1::new();
     hasher.update(&info);
     let info_hash = hasher.finalize();
@@ -169,23 +175,77 @@ fn make_request(url: &str, info: &[u8], piece_length: i64) {
 
     let resp = reqwest::blocking::get(url).unwrap().bytes().unwrap();
     let resp: Response = serde_bencode::from_bytes(&resp).unwrap();
+    let mut peers = vec![];
     resp.peers.as_slice().chunks(6).for_each(|d| {
         let port = u16::from_be_bytes([d[4], d[5]]);
         let addr = format!("{}.{}.{}.{}:{}", d[0], d[1], d[2], d[3], port);
         println!("{}", addr);
+        peers.push(addr);
     });
+    peers
 }
 
-fn handshake(file_name: &str, addr: &str) {
+fn info_hash_encoded(torrent: &Torrent) -> String {
+    let hash = info_hash(torrent);
+    let mut encoded = String::with_capacity(hash.len() * 3);
+    for byte in hash {
+        encoded.push('%');
+        encoded.push_str(&hex::encode(&[byte]));
+    }
+    encoded
+}
+
+fn get_peers_list(torrent: &Torrent) -> Vec<String> {
+    let tracker_url = torrent.announce.as_ref().unwrap();
+    let piece_length = torrent.info.piece_length.to_string();
+    let params = [
+        ("peer_id", "00112233445566778899"),
+        ("port", "6881"),
+        ("uploaded", "0"),
+        ("downloaded", "0"),
+        ("left", piece_length.as_str()),
+        ("compact", "1"),
+    ];
+    let params = serde_urlencoded::to_string(&params).unwrap();
+    let url = format!(
+        "{}?{}&info_hash={}",
+        tracker_url,
+        params,
+        info_hash_encoded(torrent)
+    );
+    #[derive(Deserialize)]
+    struct Response {
+        peers: ByteBuf,
+    }
+    let resp = reqwest::blocking::get(url).unwrap().bytes().unwrap();
+    let resp: Response = serde_bencode::from_bytes(&resp).unwrap();
+    let mut peers = vec![];
+    resp.peers.as_slice().chunks(6).for_each(|d| {
+        let port = u16::from_be_bytes([d[4], d[5]]);
+        let addr = format!("{}.{}.{}.{}:{}", d[0], d[1], d[2], d[3], port);
+        peers.push(addr);
+    });
+    peers
+}
+
+fn parse_torrent_file(file_name: &str) -> Torrent {
     let mut file = fs::File::open(file_name).unwrap();
     let length = file.metadata().unwrap().len();
     let mut data = Vec::with_capacity(length as usize);
     file.read_to_end(&mut data).unwrap();
-    let data: Torrent = serde_bencode::from_bytes(&data).unwrap();
-    let info = serde_bencode::to_bytes(&data.info).unwrap();
+    serde_bencode::from_bytes(&data).unwrap()
+}
+
+fn info_hash(torrent: &Torrent) -> [u8; 20] {
+    let info = serde_bencode::to_bytes(&torrent.info).unwrap();
     let mut hasher = Sha1::new();
     hasher.update(&info);
-    let info_hash = hasher.finalize();
+    hasher.finalize().into()
+}
+
+fn handshake(file_name: &str, addr: &str) {
+    let data = parse_torrent_file(file_name);
+    let info_hash = info_hash(&data);
     let mut body: [u8; 68] = [0; 68];
     body[0] = 19;
     "BitTorrent protocol"
@@ -196,7 +256,7 @@ fn handshake(file_name: &str, addr: &str) {
             body[i + 1] = b;
         });
     info_hash.iter().enumerate().for_each(|(i, &b)| {
-            body[i + 28] = b;
+        body[i + 28] = b;
     });
     "00112233445566778899"
         .as_bytes()
@@ -210,4 +270,135 @@ fn handshake(file_name: &str, addr: &str) {
     let mut response = [0u8; 68];
     stream.read_exact(&mut response).unwrap();
     println!("Peer ID: {}", hex::encode(&response[48..]));
+}
+
+fn download_piece(args: &[String]) {
+    if args.len() != 6 {
+        panic!("incorrect arguments");
+    }
+    let output_path = &args[3];
+    let file_name = &args[4];
+    let piece_index = args[5].parse::<usize>().unwrap();
+    let torrent = parse_torrent_file(file_name);
+    let total_length = torrent.info.length.unwrap();
+    let piece_length = torrent.info.piece_length;
+    let (num_piece, remainder_piece_len) = if total_length % piece_length > 0 {
+        (
+            (total_length / piece_length) + 1,
+            total_length % piece_length,
+        )
+    } else {
+        (total_length / piece_length, 0)
+    };
+    if piece_index >= num_piece as usize {
+        panic!("invalid index");
+    }
+    let piece_length = if piece_index < num_piece as usize - 1 {
+        piece_length
+    } else {
+        if remainder_piece_len == 0 {
+            piece_length
+        } else {
+            remainder_piece_len
+        }
+    };
+    let peers = get_peers_list(&torrent);
+    let addr = peers[0].as_str();
+    let info_hash = info_hash(&torrent);
+    let mut body: [u8; 68] = [0; 68];
+    body[0] = 19;
+    "BitTorrent protocol"
+        .as_bytes()
+        .iter()
+        .enumerate()
+        .for_each(|(i, &b)| {
+            body[i + 1] = b;
+        });
+    info_hash.iter().enumerate().for_each(|(i, &b)| {
+        body[i + 28] = b;
+    });
+    "00112233445566778899"
+        .as_bytes()
+        .iter()
+        .enumerate()
+        .for_each(|(i, &b)| {
+            body[i + 48] = b;
+        });
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream.write_all(&body).unwrap();
+    let mut response = [0u8; 68];
+    stream.read_exact(&mut response).unwrap();
+    let mut buffer = [0u8; 4];
+    stream.read_exact(&mut buffer).unwrap();
+    let message_length = u32::from_be_bytes(buffer);
+    let mut buffer = vec![0; message_length as usize];
+    stream.read_exact(&mut buffer).unwrap();
+
+    // send interested message
+    let mut message = [0u8; 5];
+    message[3] = 1;
+    message[4] = 2;
+    stream.write_all(&message).unwrap();
+    let mut buffer = [0u8; 4];
+    stream.read_exact(&mut buffer).unwrap();
+    let message_length = u32::from_be_bytes(buffer);
+    let mut buffer = vec![0u8; message_length as usize];
+    stream.read_exact(&mut buffer).unwrap();
+
+    let block_size = 16 * 1024;
+    let (num_blocks, remainder_block_size) = if piece_length % block_size > 0 {
+        ((piece_length / block_size) + 1, piece_length % block_size)
+    } else {
+        (piece_length / block_size, 0)
+    };
+    let mut output_bytes = Vec::with_capacity(piece_length as usize);
+    for idx in 0..num_blocks {
+        let begin = idx * block_size;
+        let length = if idx < num_blocks - 1 {
+            block_size
+        } else {
+            if remainder_block_size == 0 {
+                block_size
+            } else {
+                remainder_block_size
+            }
+        };
+        let payload = [
+            13u32.to_be_bytes().as_slice(),
+            6u8.to_be_bytes().as_slice(),
+            (piece_index as u32).to_be_bytes().as_slice(),
+            (begin as u32).to_be_bytes().as_slice(),
+            (length as u32).to_be_bytes().as_slice(),
+        ]
+        .concat();
+        stream.write_all(&payload).unwrap();
+        loop {
+            let mut buffer = [0u8; 4];
+            stream.read_exact(&mut buffer).unwrap();
+            let message_length = u32::from_be_bytes(buffer);
+            if message_length == 0 {
+                continue;
+            }
+            let mut buffer = vec![0u8; message_length as usize];
+            stream.read_exact(&mut buffer).unwrap();
+            if buffer[0] != 7 {
+                continue;
+            }
+            let data = &buffer[9..];
+            output_bytes.extend(data);
+            break;
+        }
+    }
+    let mut hasher = Sha1::new();
+    hasher.update(&output_bytes);
+    let output_hash: [u8; 20] = hasher.finalize().into();
+    let output_hash = hex::encode(&output_hash);
+    let actual_hash = torrent.info.pieces.chunks(20).skip(piece_index).next().unwrap();
+    let actual_hash = hex::encode(&actual_hash);
+    assert_eq!(output_hash, actual_hash);
+    // write to output path
+    let mut f = fs::File::create(output_path).unwrap();
+    f.write_all(&output_bytes).unwrap();
+    f.flush().unwrap();
+    println!("Piece {} downloaded to {}", piece_index, output_path);
 }
